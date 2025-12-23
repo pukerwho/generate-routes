@@ -73,6 +73,8 @@ final class Treba_Routes_Ai_Content_Plugin
                 'OpenRouter · DevStral 2512 (free)',
             'x-ai/grok-code-fast-1' => 'OpenRouter · Grok Code Fast 1',
             'x-ai/grok-4-fast' => 'OpenRouter · Grok 4 Fast',
+            'google/gemini-3-flash-preview' =>
+                'OpenRouter · Gemini 3 Flash preview',
             'google/gemini-2.5-flash' => 'OpenRouter · Gemini 2.5 Flash',
             'google/gemini-2.0-flash-001' =>
                 'OpenRouter · Gemini 2.0 Flash 001',
