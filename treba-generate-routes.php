@@ -48,6 +48,7 @@ final class Treba_Routes_Ai_Content_Plugin
         'stops_forward',
         'stops_backward',
     ];
+    private $csv_optional_fields = ['template', 'model'];
     private $providers = [
         'openai' => 'OpenAI',
         'openrouter' => 'OpenRouter',
@@ -721,6 +722,14 @@ final class Treba_Routes_Ai_Content_Plugin
                 'Зупинки назад (stops_backward)',
                 'treba-generate-content'
             ),
+            'template' => __(
+                'Шаблон (id шаблону, опційно)',
+                'treba-generate-content'
+            ),
+            'model' => __(
+                'Модель (ключ моделі, опційно)',
+                'treba-generate-content'
+            ),
         ]; ?>
 
         <div class="card">
@@ -799,6 +808,68 @@ final class Treba_Routes_Ai_Content_Plugin
                                     </td>
                                 </tr>
                             <?php endforeach; ?>
+                            <tr>
+                                <th scope="row"><?php esc_html_e(
+                                    'Шаблон (опційно, з CSV)',
+                                    'treba-generate-content'
+                                ); ?></th>
+                                <td>
+                                    <select name="tgpt_csv_map[template]">
+                                        <option value=""><?php esc_html_e(
+                                            '— Не використовувати —',
+                                            'treba-generate-content'
+                                        ); ?></option>
+                                        <?php foreach (
+                                            $csv_headers
+                                            as $header
+                                        ): ?>
+                                            <option value="<?php echo esc_attr(
+                                                $header
+                                            ); ?>" <?php selected(
+    $csv_session['mapping']['template'] ?? '',
+    $header
+); ?>>
+                                                <?php echo esc_html($header); ?>
+                                            </option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                    <p class="description"><?php esc_html_e(
+                                        'Вкажіть колонку з id шаблону (slug), якщо потрібно перевизначати шаблон по рядках.',
+                                        'treba-generate-content'
+                                    ); ?></p>
+                                </td>
+                            </tr>
+                            <tr>
+                                <th scope="row"><?php esc_html_e(
+                                    'Модель (опційно, з CSV)',
+                                    'treba-generate-content'
+                                ); ?></th>
+                                <td>
+                                    <select name="tgpt_csv_map[model]">
+                                        <option value=""><?php esc_html_e(
+                                            '— Не використовувати —',
+                                            'treba-generate-content'
+                                        ); ?></option>
+                                        <?php foreach (
+                                            $csv_headers
+                                            as $header
+                                        ): ?>
+                                            <option value="<?php echo esc_attr(
+                                                $header
+                                            ); ?>" <?php selected(
+    $csv_session['mapping']['model'] ?? '',
+    $header
+); ?>>
+                                                <?php echo esc_html($header); ?>
+                                            </option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                    <p class="description"><?php esc_html_e(
+                                        'Вкажіть колонку з точним ключем моделі (див. списки у налаштуваннях: OpenAI або OpenRouter).',
+                                        'treba-generate-content'
+                                    ); ?></p>
+                                </td>
+                            </tr>
                             <tr>
                                 <th scope="row"><?php esc_html_e(
                                     'Шаблон для імпорту',
@@ -1999,6 +2070,12 @@ final class Treba_Routes_Ai_Content_Plugin
             }
         }
 
+        foreach ($this->csv_optional_fields as $optional_key) {
+            $mapping[$optional_key] = isset($mapping_input[$optional_key])
+                ? sanitize_text_field(wp_unslash($mapping_input[$optional_key]))
+                : '';
+        }
+
         $template = isset($_POST['tgpt_csv_template'])
             ? sanitize_key(wp_unslash($_POST['tgpt_csv_template']))
             : $this->get_default_template_key();
@@ -2063,8 +2140,28 @@ final class Treba_Routes_Ai_Content_Plugin
         $providers = $this->providers;
         $provider = $this->get_default_provider();
         $provider = isset($providers[$provider]) ? $provider : 'openai';
-        $api_key = $this->get_saved_api_key($provider);
         $errors = [];
+        $model_override = isset($input['model'])
+            ? sanitize_text_field(wp_unslash($input['model']))
+            : '';
+        $api_key = '';
+
+        if ('' !== $model_override) {
+            $detected_provider = $this->find_provider_for_model(
+                $model_override
+            );
+
+            if ($detected_provider && isset($providers[$detected_provider])) {
+                $provider = $detected_provider;
+            } else {
+                $errors[] = esc_html__(
+                    'Модель із CSV не знайдена у переліку доступних.',
+                    'treba-generate-content'
+                );
+            }
+        }
+
+        $api_key = $this->get_saved_api_key($provider);
 
         if (empty($api_key)) {
             $errors[] = sprintf(
@@ -2139,6 +2236,19 @@ final class Treba_Routes_Ai_Content_Plugin
         );
         $available_models = $this->get_models_for_provider($provider);
         $model = $this->get_default_model($provider);
+        if ('' !== $model_override) {
+            if (isset($available_models[$model_override])) {
+                $model = $model_override;
+            } else {
+                $errors[] = sprintf(
+                    esc_html__(
+                        'Модель %s недоступна для обраного провайдера.',
+                        'treba-generate-content'
+                    ),
+                    esc_html($model_override)
+                );
+            }
+        }
         $valid_categories = [];
 
         if ($taxonomy_for_categories && !empty($selected_categories)) {
@@ -2425,9 +2535,28 @@ final class Treba_Routes_Ai_Content_Plugin
         $results = [];
 
         foreach ($rows as $index => $row) {
+            $row_template = $template;
+
+            if (
+                !empty($mapping['template']) &&
+                !empty($row[$mapping['template']])
+            ) {
+                $candidate = sanitize_key($row[$mapping['template']]);
+
+                if (isset($this->templates[$candidate])) {
+                    $row_template = $candidate;
+                }
+            }
+
+            $row_model = '';
+
+            if (!empty($mapping['model']) && !empty($row[$mapping['model']])) {
+                $row_model = sanitize_text_field($row[$mapping['model']]);
+            }
+
             $payload = [
                 'title' => $row[$mapping['title']] ?? '',
-                'template' => $template,
+                'template' => $row_template,
                 'post_type' => $this->get_default_post_type(),
                 'route_number' => $row[$mapping['route_number']] ?? '',
                 'route_type' => $row[$mapping['route_type']] ?? '',
@@ -2439,6 +2568,7 @@ final class Treba_Routes_Ai_Content_Plugin
                 'price' => $row[$mapping['price']] ?? '',
                 'stops_forward' => $row[$mapping['stops_forward']] ?? '',
                 'stops_backward' => $row[$mapping['stops_backward']] ?? '',
+                'model' => $row_model,
             ];
 
             $result = $this->process_generation($payload, false);
@@ -2953,6 +3083,17 @@ final class Treba_Routes_Ai_Content_Plugin
         }
 
         return true;
+    }
+
+    private function find_provider_for_model($model_key)
+    {
+        foreach ($this->models as $provider_key => $provider_models) {
+            if (isset($provider_models[$model_key])) {
+                return (string) $provider_key;
+            }
+        }
+
+        return '';
     }
 
     private function get_csv_chunk_size(array $session)
