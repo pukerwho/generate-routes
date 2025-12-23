@@ -33,6 +33,21 @@ final class Treba_Routes_Ai_Content_Plugin
     private $markdown_parser;
     private $cached_api_keys = [];
     private $encryption_key = null;
+    private $csv_session_ttl = HOUR_IN_SECONDS;
+    private $csv_default_chunk = 3;
+    private $csv_required_fields = [
+        'title',
+        'route_number',
+        'route_type',
+        'city',
+        'distance',
+        'interval',
+        'travel_time',
+        'carrier',
+        'price',
+        'stops_forward',
+        'stops_backward',
+    ];
     private $providers = [
         'openai' => 'OpenAI',
         'openrouter' => 'OpenRouter',
@@ -93,6 +108,10 @@ final class Treba_Routes_Ai_Content_Plugin
         $this->load_templates();
         add_action('admin_menu', [$this, 'register_admin_page']);
         add_action('admin_init', [$this, 'handle_form_submissions']);
+        add_action('wp_ajax_tgpt_csv_generate_batch', [
+            $this,
+            'ajax_generate_csv_batch',
+        ]);
     }
 
     private function load_templates()
@@ -186,6 +205,18 @@ final class Treba_Routes_Ai_Content_Plugin
 
         if ('generate_post' === $action) {
             $this->handle_post_generation();
+        }
+
+        if ('upload_csv' === $action) {
+            $this->handle_csv_upload();
+        }
+
+        if ('save_csv_mapping' === $action) {
+            $this->handle_csv_mapping();
+        }
+
+        if ('clear_csv_session' === $action) {
+            $this->clear_csv_session();
         }
 
         if ('save_template' === $action) {
@@ -305,13 +336,32 @@ final class Treba_Routes_Ai_Content_Plugin
         $default_template_key = $this->get_default_template_key();
         $templates = $this->templates;
         $post_types = $this->get_available_post_types();
-        $post_type = $this->get_field_value(
-            'tgpt_post_type',
-            $this->get_default_post_type()
-        );
-        if (!isset($post_types[$post_type])) {
-            $post_type = 'post';
+        $post_type = $this->get_default_post_type();
+        $post_type = isset($post_types[$post_type]) ? $post_type : 'post';
+        $post_type_obj = $post_types[$post_type] ?? null;
+        $categories_data = $this->get_category_terms_for_post_type($post_type);
+        $post_type_label = $post_type;
+
+        if ($post_type_obj) {
+            $post_type_label =
+                $post_type_obj->labels->singular_name ??
+                ($post_type_obj->label ?? $post_type);
         }
+
+        $selected_categories =
+            isset($_POST['tgpt_categories']) && !$this->reset_form
+                ? array_map(
+                    'intval',
+                    (array) wp_unslash($_POST['tgpt_categories'])
+                )
+                : [];
+        $csv_session = $this->get_csv_session();
+        $csv_headers = $csv_session['headers'] ?? [];
+        $csv_total_rows = (int) ($csv_session['row_count'] ?? 0);
+        $csv_mapping_complete = $this->is_csv_mapping_complete($csv_session);
+        $csv_template_selected =
+            $csv_session['template'] ?? $default_template_key;
+        $csv_chunk = $this->get_csv_chunk_size($csv_session);
 
         if ('' === $default_template_key) {
             $templates_url = esc_url(
@@ -441,28 +491,58 @@ final class Treba_Routes_Ai_Content_Plugin
                             'treba-generate-content'
                         ); ?></th>
                         <td>
-                            <select name="tgpt_post_type">
-                                <?php foreach (
-                                    $post_types
-                                    as $type_key => $type_obj
-                                ): ?>
-                                    <option value="<?php echo esc_attr(
-                                        $type_key
-                                    ); ?>" <?php selected(
-    $post_type,
-    $type_key
-); ?>>
-                                        <?php echo esc_html(
-                                            $type_obj->labels->singular_name ??
-                                                ($type_obj->label ?? $type_key)
-                                        ); ?>
-                                    </option>
-                                <?php endforeach; ?>
-                            </select>
+                            <strong>
+                                <?php echo esc_html($post_type_label); ?>
+                            </strong>
+                            <input type="hidden" name="tgpt_post_type" value="<?php echo esc_attr(
+                                $post_type
+                            ); ?>">
                             <p class="description"><?php esc_html_e(
-                                'Виберіть тип запису для створення контенту.',
+                                'Тип задається у вкладці «Налаштування доступу».',
                                 'treba-generate-content'
                             ); ?></p>
+                        </td>
+                    </tr>
+
+                    <tr>
+                        <th scope="row"><?php esc_html_e(
+                            'Категорії',
+                            'treba-generate-content'
+                        ); ?></th>
+                        <td>
+                            <?php if (
+                                $categories_data['taxonomy'] &&
+                                !empty($categories_data['terms'])
+                            ): ?>
+                                <select name="tgpt_categories[]" multiple size="6" style="min-width:300px;">
+                                    <?php foreach (
+                                        $categories_data['terms']
+                                        as $term
+                                    ): ?>
+                                        <option value="<?php echo esc_attr(
+                                            $term->term_id
+                                        ); ?>" <?php selected(
+    in_array((int) $term->term_id, $selected_categories, true)
+); ?>>
+                                            <?php echo esc_html($term->name); ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                                <p class="description"><?php esc_html_e(
+                                    'Категорії для вибраного типу запису.',
+                                    'treba-generate-content'
+                                ); ?></p>
+                            <?php elseif ($categories_data['taxonomy']): ?>
+                                <p class="description"><?php esc_html_e(
+                                    'Для цього типу запису ще немає категорій.',
+                                    'treba-generate-content'
+                                ); ?></p>
+                            <?php else: ?>
+                                <p class="description"><?php esc_html_e(
+                                    'Для цього типу запису не знайдено таксономій з категоріями.',
+                                    'treba-generate-content'
+                                ); ?></p>
+                            <?php endif; ?>
                         </td>
                     </tr>
 
@@ -613,6 +693,383 @@ final class Treba_Routes_Ai_Content_Plugin
        __('Згенерувати та створити запис', 'treba-generate-content')
    ); ?>
 		</form>
+
+        <?php $csv_field_labels = [
+            'title' => __('Назва (title)', 'treba-generate-content'),
+            'route_number' => __(
+                'Номер маршруту (route_number)',
+                'treba-generate-content'
+            ),
+            'route_type' => __(
+                'Тип маршруту (route_type)',
+                'treba-generate-content'
+            ),
+            'city' => __('Місто (city)', 'treba-generate-content'),
+            'distance' => __('Довжина (distance)', 'treba-generate-content'),
+            'interval' => __('Інтервал (interval)', 'treba-generate-content'),
+            'travel_time' => __(
+                'Час руху (travel_time)',
+                'treba-generate-content'
+            ),
+            'carrier' => __('Перевізник (carrier)', 'treba-generate-content'),
+            'price' => __('Ціна (price)', 'treba-generate-content'),
+            'stops_forward' => __(
+                'Зупинки туди (stops_forward)',
+                'treba-generate-content'
+            ),
+            'stops_backward' => __(
+                'Зупинки назад (stops_backward)',
+                'treba-generate-content'
+            ),
+        ]; ?>
+
+        <div class="card">
+            <h2><?php esc_html_e(
+                'Імпорт CSV',
+                'treba-generate-content'
+            ); ?></h2>
+            <p><?php esc_html_e(
+                'Завантажте CSV (кома, UTF-8, перший рядок — заголовки), зробіть мапінг колонок і запустіть пакетну генерацію.',
+                'treba-generate-content'
+            ); ?></p>
+
+            <form method="post" enctype="multipart/form-data" style="margin-bottom:16px;">
+                <?php wp_nonce_field('tgpt_upload_csv'); ?>
+                <input type="hidden" name="tgpt_action" value="upload_csv">
+                <input type="file" name="tgpt_csv_file" accept=".csv,text/csv" required>
+                <?php submit_button(
+                    __('Завантажити CSV', 'treba-generate-content'),
+                    'secondary',
+                    'submit',
+                    false
+                ); ?>
+            </form>
+
+            <?php if (!empty($csv_session)): ?>
+                <p>
+                    <?php echo esc_html(
+                        sprintf(
+                            __(
+                                'Файл: %1$s · Рядків: %2$d',
+                                'treba-generate-content'
+                            ),
+                            $csv_session['file_name'] ?? '',
+                            $csv_total_rows
+                        )
+                    ); ?>
+                </p>
+
+                <form method="post" style="margin-bottom:16px;">
+                    <?php wp_nonce_field('tgpt_save_csv_mapping'); ?>
+                    <input type="hidden" name="tgpt_action" value="save_csv_mapping">
+                    <table class="form-table" role="presentation">
+                        <tbody>
+                            <?php foreach (
+                                $csv_field_labels
+                                as $field_key => $field_label
+                            ): ?>
+                                <tr>
+                                    <th scope="row"><?php echo esc_html(
+                                        $field_label
+                                    ); ?></th>
+                                    <td>
+                                        <select name="tgpt_csv_map[<?php echo esc_attr(
+                                            $field_key
+                                        ); ?>]" required>
+                                            <option value=""><?php esc_html_e(
+                                                '— Оберіть колонку —',
+                                                'treba-generate-content'
+                                            ); ?></option>
+                                            <?php foreach (
+                                                $csv_headers
+                                                as $header
+                                            ): ?>
+                                                <option value="<?php echo esc_attr(
+                                                    $header
+                                                ); ?>" <?php selected(
+    $csv_session['mapping'][$field_key] ?? '',
+    $header
+); ?>>
+                                                    <?php echo esc_html(
+                                                        $header
+                                                    ); ?>
+                                                </option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                            <tr>
+                                <th scope="row"><?php esc_html_e(
+                                    'Шаблон для імпорту',
+                                    'treba-generate-content'
+                                ); ?></th>
+                                <td>
+                                    <select name="tgpt_csv_template">
+                                        <?php foreach (
+                                            $templates
+                                            as $key => $template
+                                        ): ?>
+                                            <option value="<?php echo esc_attr(
+                                                $key
+                                            ); ?>" <?php selected(
+    $csv_template_selected,
+    $key
+); ?>>
+                                                <?php echo esc_html(
+                                                    $template['label']
+                                                ); ?>
+                                            </option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                    <p class="description"><?php esc_html_e(
+                                        'Використовується для всіх рядків CSV.',
+                                        'treba-generate-content'
+                                    ); ?></p>
+                                </td>
+                            </tr>
+                            <tr>
+                                <th scope="row"><?php esc_html_e(
+                                    'Розмір пакета (рядків за один крок)',
+                                    'treba-generate-content'
+                                ); ?></th>
+                                <td>
+                                    <input type="number" name="tgpt_csv_chunk" value="<?php echo esc_attr(
+                                        $csv_chunk
+                                    ); ?>" min="1" max="10" step="1" style="width:80px;">
+                                    <p class="description"><?php esc_html_e(
+                                        'Рекомендуємо 3–5, щоб уникнути таймаутів.',
+                                        'treba-generate-content'
+                                    ); ?></p>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <?php submit_button(
+                        __('Зберегти мапінг', 'treba-generate-content')
+                    ); ?>
+                </form>
+
+                <form method="post" style="margin-bottom:12px;">
+                    <?php wp_nonce_field('tgpt_upload_csv'); ?>
+                    <input type="hidden" name="tgpt_action" value="clear_csv_session">
+                    <?php submit_button(
+                        __('Очистити CSV', 'treba-generate-content'),
+                        'delete',
+                        'submit',
+                        false
+                    ); ?>
+                </form>
+
+                <?php if ($csv_mapping_complete && $csv_total_rows > 0): ?>
+                    <button
+                        id="tgpt-csv-start"
+                        class="button button-primary"
+                        data-total="<?php echo esc_attr($csv_total_rows); ?>"
+                        data-chunk="<?php echo esc_attr($csv_chunk); ?>"
+                        data-nonce="<?php echo esc_attr(
+                            wp_create_nonce('tgpt_csv_batch')
+                        ); ?>"
+                        data-ajaxurl="<?php echo esc_url(
+                            admin_url('admin-ajax.php')
+                        ); ?>"
+                    >
+                        <?php esc_html_e(
+                            'Почати пакетну генерацію',
+                            'treba-generate-content'
+                        ); ?>
+                    </button>
+                    <p class="description"><?php esc_html_e(
+                        'Генерація виконується батчами, щоб уникнути таймаутів.',
+                        'treba-generate-content'
+                    ); ?></p>
+                    <div id="tgpt-csv-progress" style="margin-top:8px;"></div>
+                    <script>
+                        (() => {
+                            const btn = document.getElementById('tgpt-csv-start');
+                            if (!btn) return;
+
+                            const progress = document.getElementById('tgpt-csv-progress');
+                            const total = parseInt(btn.dataset.total || '0', 10);
+                            const chunk = parseInt(btn.dataset.chunk || '3', 10);
+                            const nonce = btn.dataset.nonce || '';
+                            const ajaxUrl = btn.dataset.ajaxurl || (window.ajaxurl || '');
+
+                            const logLines = [];
+                            let currentOffset = 0;
+                            let isRunning = false;
+
+                            const render = (text) => {
+                                if (progress) {
+                                    progress.innerHTML = text;
+                                }
+                            };
+
+                            const appendLog = (line) => {
+                                logLines.push(line);
+                                if (logLines.length > 50) {
+                                    logLines.shift();
+                                }
+                                render(
+                                    logLines.join('<br>') +
+                                        '<br>' +
+                                        '<?php echo esc_js(
+                                            __(
+                                                'Прогрес:',
+                                                'treba-generate-content'
+                                            )
+                                        ); ?> ' +
+                                        Math.min(currentOffset, total) +
+                                        ' / ' +
+                                        total
+                                );
+                            };
+
+                            const runBatch = () => {
+                                if (!ajaxUrl || !nonce) {
+                                    render('<?php echo esc_js(
+                                        __(
+                                            'Немає AJAX конфігурації.',
+                                            'treba-generate-content'
+                                        )
+                                    ); ?>');
+                                    btn.disabled = false;
+                                    return;
+                                }
+
+                                isRunning = true;
+                                btn.disabled = true;
+                                render(
+                                    '<?php echo esc_js(
+                                        __(
+                                            'Обробка...',
+                                            'treba-generate-content'
+                                        )
+                                    ); ?>'
+                                );
+
+                                const body = new URLSearchParams();
+                                body.append('action', 'tgpt_csv_generate_batch');
+                                body.append('nonce', nonce);
+                                body.append('offset', String(currentOffset));
+                                body.append('limit', String(chunk));
+
+                                fetch(ajaxUrl, {
+                                    method: 'POST',
+                                    credentials: 'same-origin',
+                                    headers: {
+                                        'Content-Type':
+                                            'application/x-www-form-urlencoded; charset=UTF-8',
+                                    },
+                                    body,
+                                })
+                                    .then((res) => res.json())
+                                    .then((json) => {
+                                        if (!json || !json.success) {
+                                            const msg =
+                                                (json && json.data && json.data.message) ||
+                                                '<?php echo esc_js(
+                                                    __(
+                                                        'Помилка виконання запиту.',
+                                                        'treba-generate-content'
+                                                    )
+                                                ); ?>';
+                                            render(msg);
+                                            btn.disabled = false;
+                                            isRunning = false;
+                                            return;
+                                        }
+
+                                        const data = json.data || {};
+                                        const processed = Array.isArray(data.processed)
+                                            ? data.processed
+                                            : [];
+
+                                        processed.forEach((row) => {
+                                            if (row.success) {
+                                                appendLog(
+                                                    '✔ ' +
+                                                        '<?php echo esc_js(
+                                                            __(
+                                                                'Рядок',
+                                                                'treba-generate-content'
+                                                            )
+                                                        ); ?> ' +
+                                                        (row.row || '') +
+                                                        ': ' +
+                                                        (row.message || '<?php echo esc_js(
+                                                            __(
+                                                                'Готово',
+                                                                'treba-generate-content'
+                                                            )
+                                                        ); ?>')
+                                                );
+                                            } else {
+                                                appendLog(
+                                                    '✖ ' +
+                                                        '<?php echo esc_js(
+                                                            __(
+                                                                'Рядок',
+                                                                'treba-generate-content'
+                                                            )
+                                                        ); ?> ' +
+                                                        (row.row || '') +
+                                                        ': ' +
+                                                        (row.message ||
+                                                            '<?php echo esc_js(
+                                                                __(
+                                                                    'Помилка',
+                                                                    'treba-generate-content'
+                                                                )
+                                                            ); ?>')
+                                                );
+                                            }
+                                        });
+
+                                        currentOffset = data.next_offset || currentOffset + processed.length;
+
+                                        if (data.done) {
+                                            render(
+                                                '<?php echo esc_js(
+                                                    __(
+                                                        'Генерацію завершено.',
+                                                        'treba-generate-content'
+                                                    )
+                                                ); ?>'
+                                            );
+                                            btn.disabled = false;
+                                            isRunning = false;
+                                            return;
+                                        }
+
+                                        runBatch();
+                                    })
+                                    .catch(() => {
+                                        render('<?php echo esc_js(
+                                            __(
+                                                'Помилка мережі.',
+                                                'treba-generate-content'
+                                            )
+                                        ); ?>');
+                                        btn.disabled = false;
+                                        isRunning = false;
+                                    });
+                            };
+
+                            btn.addEventListener('click', (event) => {
+                                event.preventDefault();
+                                if (isRunning) {
+                                    return;
+                                }
+                                logLines.length = 0;
+                                currentOffset = 0;
+                                runBatch();
+                            });
+                        })();
+                    </script>
+                <?php endif; ?>
+            <?php endif; ?>
+        </div>
 		<?php
     }
 
@@ -968,7 +1425,7 @@ final class Treba_Routes_Ai_Content_Plugin
                                 <?php endforeach; ?>
                             </select>
                             <p class="description"><?php esc_html_e(
-                                'Цей тип буде підставлено у формі генерації за замовчуванням.',
+                                'Цей тип використовується у генераторі та для підбору категорій.',
                                 'treba-generate-content'
                             ); ?></p>
                         </td>
@@ -1415,78 +1872,293 @@ final class Treba_Routes_Ai_Content_Plugin
         );
     }
 
+    private function handle_csv_upload()
+    {
+        if (!$this->is_user_allowed()) {
+            return;
+        }
+
+        check_admin_referer('tgpt_upload_csv');
+
+        if (
+            empty($_FILES['tgpt_csv_file']) ||
+            !is_array($_FILES['tgpt_csv_file'])
+        ) {
+            $this->errors[] = esc_html__(
+                'Не завантажено файл CSV.',
+                'treba-generate-content'
+            );
+            return;
+        }
+
+        require_once ABSPATH . 'wp-admin/includes/file.php';
+
+        $file = $_FILES['tgpt_csv_file'];
+        $allowed_mimes = [
+            'csv' => 'text/csv',
+            'txt' => 'text/plain',
+            'application/csv' => 'text/csv',
+            'text/comma-separated-values' => 'text/csv',
+            'application/vnd.ms-excel' => 'text/csv',
+        ];
+
+        $uploaded = wp_handle_upload($file, [
+            'test_form' => false,
+            'mimes' => $allowed_mimes,
+        ]);
+
+        if (isset($uploaded['error'])) {
+            $this->errors[] = esc_html($uploaded['error']);
+            return;
+        }
+
+        $file_path = $uploaded['file'] ?? '';
+
+        if ('' === $file_path) {
+            $this->errors[] = esc_html__(
+                'Не вдалося зберегти файл.',
+                'treba-generate-content'
+            );
+            return;
+        }
+
+        $parse = $this->read_csv_headers_and_count($file_path, ',');
+        $headers = $parse['headers'];
+        $rows = (int) $parse['rows'];
+
+        if (empty($headers)) {
+            @unlink($file_path);
+            $this->errors[] = esc_html__(
+                'CSV не містить заголовків або має порожній перший рядок.',
+                'treba-generate-content'
+            );
+            return;
+        }
+
+        $this->remove_csv_file($this->get_csv_session());
+
+        $session = [
+            'file_path' => $file_path,
+            'file_name' => basename($file_path),
+            'headers' => $headers,
+            'row_count' => max(0, $rows),
+            'delimiter' => ',',
+            'uploaded_at' => time(),
+            'mapping' => [],
+            'template' => $this->get_default_template_key(),
+            'chunk' => $this->csv_default_chunk,
+        ];
+
+        $this->save_csv_session($session);
+
+        $this->notices[] = sprintf(
+            esc_html__(
+                'CSV завантажено: %d рядків (без заголовка). Оберіть мапінг полів нижче.',
+                'treba-generate-content'
+            ),
+            max(0, $rows)
+        );
+    }
+
+    private function handle_csv_mapping()
+    {
+        if (!$this->is_user_allowed()) {
+            return;
+        }
+
+        check_admin_referer('tgpt_save_csv_mapping');
+
+        $session = $this->get_csv_session();
+
+        if (empty($session)) {
+            $this->errors[] = esc_html__(
+                'Спершу завантажте CSV-файл.',
+                'treba-generate-content'
+            );
+            return;
+        }
+
+        $mapping_input = isset($_POST['tgpt_csv_map'])
+            ? (array) $_POST['tgpt_csv_map']
+            : [];
+        $mapping = [];
+
+        foreach ($this->csv_required_fields as $field_key) {
+            $mapping[$field_key] = isset($mapping_input[$field_key])
+                ? sanitize_text_field(wp_unslash($mapping_input[$field_key]))
+                : '';
+        }
+
+        foreach ($mapping as $field => $column) {
+            if ('' === $column) {
+                $this->errors[] = esc_html__(
+                    'Заповніть мапінг для всіх обовʼязкових полів.',
+                    'treba-generate-content'
+                );
+                return;
+            }
+        }
+
+        $template = isset($_POST['tgpt_csv_template'])
+            ? sanitize_key(wp_unslash($_POST['tgpt_csv_template']))
+            : $this->get_default_template_key();
+
+        if (!isset($this->templates[$template])) {
+            $template = $this->get_default_template_key();
+        }
+
+        $chunk = isset($_POST['tgpt_csv_chunk'])
+            ? (int) $_POST['tgpt_csv_chunk']
+            : $this->csv_default_chunk;
+        $chunk = max(1, min(10, $chunk));
+
+        $session['mapping'] = $mapping;
+        $session['template'] = $template;
+        $session['chunk'] = $chunk;
+
+        $this->save_csv_session($session);
+
+        $this->notices[] = esc_html__(
+            'Мапінг збережено. Можна запускати пакетну генерацію.',
+            'treba-generate-content'
+        );
+    }
+
     private function handle_post_generation()
     {
         check_admin_referer('tgpt_generate_post');
 
+        $payload = [
+            'title' => $_POST['tgpt_topic'] ?? '',
+            'template' =>
+                $_POST['tgpt_template'] ?? $this->get_default_template_key(),
+            'post_type' =>
+                $_POST['tgpt_post_type'] ?? $this->get_default_post_type(),
+            'route_number' => $_POST['tgpt_route_number'] ?? '',
+            'route_type' => $_POST['tgpt_route_type'] ?? '',
+            'city' => $_POST['tgpt_city'] ?? '',
+            'distance' => $_POST['tgpt_distance'] ?? '',
+            'interval' => $_POST['tgpt_interval'] ?? '',
+            'travel_time' => $_POST['tgpt_travel_time'] ?? '',
+            'carrier' => $_POST['tgpt_carrier'] ?? '',
+            'price' => $_POST['tgpt_price'] ?? '',
+            'stops_forward' => $_POST['tgpt_stops_forward'] ?? '',
+            'stops_backward' => $_POST['tgpt_stops_backward'] ?? '',
+            'selected_categories' => isset($_POST['tgpt_categories'])
+                ? (array) wp_unslash($_POST['tgpt_categories'])
+                : [],
+        ];
+
+        $result = $this->process_generation($payload, true);
+
+        if (!$result['success']) {
+            return;
+        }
+
+        $this->reset_form = true;
+    }
+
+    private function process_generation(array $input, $add_notices = true)
+    {
         $providers = $this->providers;
         $provider = $this->get_default_provider();
         $provider = isset($providers[$provider]) ? $provider : 'openai';
         $api_key = $this->get_saved_api_key($provider);
+        $errors = [];
 
         if (empty($api_key)) {
-            $this->errors[] = sprintf(
+            $errors[] = sprintf(
                 esc_html__(
                     'API ключ для %s не налаштований. Додайте його у вкладці «Налаштування».',
                     'treba-generate-content'
                 ),
                 esc_html($providers[$provider] ?? ucfirst($provider))
             );
-            return;
+
+            if ($add_notices) {
+                $this->errors = array_merge($this->errors, $errors);
+            }
+
+            return [
+                'success' => false,
+                'errors' => $errors,
+            ];
         }
 
-        $title = isset($_POST['tgpt_topic'])
-            ? sanitize_text_field(wp_unslash($_POST['tgpt_topic']))
-            : '';
-        $template = isset($_POST['tgpt_template'])
-            ? sanitize_key(wp_unslash($_POST['tgpt_template']))
-            : $this->get_default_template_key();
         $post_types = $this->get_available_post_types();
-        $post_type = isset($_POST['tgpt_post_type'])
-            ? sanitize_key(wp_unslash($_POST['tgpt_post_type']))
+        $post_type = isset($input['post_type'])
+            ? sanitize_key(wp_unslash($input['post_type']))
             : $this->get_default_post_type();
         $post_type = isset($post_types[$post_type])
             ? $post_type
             : $this->get_default_post_type();
-        $route_number = isset($_POST['tgpt_route_number'])
-            ? sanitize_text_field(wp_unslash($_POST['tgpt_route_number']))
+        $taxonomy_for_categories = $this->get_primary_taxonomy_for_post_type(
+            $post_type
+        );
+        $title = isset($input['title'])
+            ? sanitize_text_field(wp_unslash($input['title']))
             : '';
-        $route_type = isset($_POST['tgpt_route_type'])
-            ? sanitize_text_field(wp_unslash($_POST['tgpt_route_type']))
+        $template = isset($input['template'])
+            ? sanitize_key(wp_unslash($input['template']))
+            : $this->get_default_template_key();
+        $template = isset($this->templates[$template])
+            ? $template
+            : $this->get_default_template_key();
+        $route_number = isset($input['route_number'])
+            ? sanitize_text_field(wp_unslash($input['route_number']))
             : '';
-        $city = isset($_POST['tgpt_city'])
-            ? sanitize_text_field(wp_unslash($_POST['tgpt_city']))
+        $route_type = isset($input['route_type'])
+            ? sanitize_text_field(wp_unslash($input['route_type']))
             : '';
-        $distance = isset($_POST['tgpt_distance'])
-            ? floatval(wp_unslash($_POST['tgpt_distance']))
+        $city = isset($input['city'])
+            ? sanitize_text_field(wp_unslash($input['city']))
+            : '';
+        $distance = isset($input['distance'])
+            ? floatval(wp_unslash($input['distance']))
             : 0;
-        $interval = isset($_POST['tgpt_interval'])
-            ? sanitize_text_field(wp_unslash($_POST['tgpt_interval']))
+        $interval = isset($input['interval'])
+            ? sanitize_text_field(wp_unslash($input['interval']))
             : '';
-        $travel_time = isset($_POST['tgpt_travel_time'])
-            ? sanitize_text_field(wp_unslash($_POST['tgpt_travel_time']))
+        $travel_time = isset($input['travel_time'])
+            ? sanitize_text_field(wp_unslash($input['travel_time']))
             : '';
-        $carrier = isset($_POST['tgpt_carrier'])
-            ? sanitize_text_field(wp_unslash($_POST['tgpt_carrier']))
+        $carrier = isset($input['carrier'])
+            ? sanitize_text_field(wp_unslash($input['carrier']))
             : '';
-        $price = isset($_POST['tgpt_price'])
-            ? sanitize_text_field(wp_unslash($_POST['tgpt_price']))
+        $price = isset($input['price'])
+            ? sanitize_text_field(wp_unslash($input['price']))
             : '';
+        $selected_categories = isset($input['selected_categories'])
+            ? array_map('intval', (array) $input['selected_categories'])
+            : [];
         $stops_forward = $this->prepare_list_from_textarea(
-            $_POST['tgpt_stops_forward'] ?? ''
+            $input['stops_forward'] ?? ''
         );
         $stops_backward = $this->prepare_list_from_textarea(
-            $_POST['tgpt_stops_backward'] ?? ''
+            $input['stops_backward'] ?? ''
         );
         $available_models = $this->get_models_for_provider($provider);
         $model = $this->get_default_model($provider);
+        $valid_categories = [];
+
+        if ($taxonomy_for_categories && !empty($selected_categories)) {
+            $valid_terms = get_terms([
+                'taxonomy' => $taxonomy_for_categories,
+                'hide_empty' => false,
+                'include' => $selected_categories,
+                'fields' => 'ids',
+            ]);
+
+            if (!is_wp_error($valid_terms)) {
+                $valid_categories = array_map('intval', $valid_terms);
+            }
+        }
 
         if (empty($title)) {
-            $this->errors[] = esc_html__(
+            $errors[] = esc_html__(
                 'Назва статті обовʼязкова.',
                 'treba-generate-content'
             );
-            return;
         }
 
         if (
@@ -1501,23 +2173,32 @@ final class Treba_Routes_Ai_Content_Plugin
             empty($stops_forward) ||
             empty($stops_backward)
         ) {
-            $this->errors[] = esc_html__(
+            $errors[] = esc_html__(
                 'Заповніть усі поля форми, включно із зупинками та довжиною маршруту.',
                 'treba-generate-content'
             );
-            return;
         }
 
         if ('' === $template || !isset($this->templates[$template])) {
-            $this->errors[] = esc_html__(
+            $errors[] = esc_html__(
                 'Немає доступних шаблонів. Додайте їх на вкладці «Шаблони».',
                 'treba-generate-content'
             );
-            return;
         }
 
         if (!isset($available_models[$model])) {
             $model = (string) array_key_first($available_models);
+        }
+
+        if (!empty($errors)) {
+            if ($add_notices) {
+                $this->errors = array_merge($this->errors, $errors);
+            }
+
+            return [
+                'success' => false,
+                'errors' => $errors,
+            ];
         }
 
         $prompt = $this->build_prompt($template, [
@@ -1542,17 +2223,33 @@ final class Treba_Routes_Ai_Content_Plugin
         );
 
         if (empty($ai_result) || empty($ai_result['content'])) {
-            return;
+            return [
+                'success' => false,
+                'errors' => [
+                    esc_html__(
+                        'Не вдалося отримати відповідь від моделі.',
+                        'treba-generate-content'
+                    ),
+                ],
+            ];
         }
 
         $content = $this->convert_markdown_to_html($ai_result['content']);
 
         if ('' === trim($content)) {
-            $this->errors[] = esc_html__(
+            $error = esc_html__(
                 'Не вдалося перетворити контент у HTML.',
                 'treba-generate-content'
             );
-            return;
+
+            if ($add_notices) {
+                $this->errors[] = $error;
+            }
+
+            return [
+                'success' => false,
+                'errors' => [$error],
+            ];
         }
 
         $post_args = [
@@ -1566,11 +2263,19 @@ final class Treba_Routes_Ai_Content_Plugin
         $post_id = wp_insert_post($post_args, true);
 
         if (is_wp_error($post_id)) {
-            $this->errors[] = esc_html__(
+            $error = esc_html__(
                 'Не вдалося створити запис. Спробуйте пізніше.',
                 'treba-generate-content'
             );
-            return;
+
+            if ($add_notices) {
+                $this->errors[] = $error;
+            }
+
+            return [
+                'success' => false,
+                'errors' => [$error],
+            ];
         }
 
         update_post_meta($post_id, '_treba_ai_template', $template);
@@ -1586,12 +2291,23 @@ final class Treba_Routes_Ai_Content_Plugin
         update_post_meta($post_id, '_treba_ai_price', $price);
         update_post_meta($post_id, '_treba_ai_stops_forward', $stops_forward);
         update_post_meta($post_id, '_treba_ai_stops_backward', $stops_backward);
+
+        if ($taxonomy_for_categories && !empty($valid_categories)) {
+            wp_set_post_terms(
+                $post_id,
+                $valid_categories,
+                $taxonomy_for_categories,
+                false
+            );
+        }
+
         $used_model =
             isset($ai_result['model']) && $ai_result['model']
                 ? $ai_result['model']
                 : $model;
         $usage = $ai_result['usage'] ?? [];
         $tokens_text = '';
+
         if (!empty($usage)) {
             $prompt_tokens = isset($usage['prompt_tokens'])
                 ? (int) $usage['prompt_tokens']
@@ -1613,7 +2329,7 @@ final class Treba_Routes_Ai_Content_Plugin
             );
         }
 
-        $this->notices[] = sprintf(
+        $message = sprintf(
             '%s <a href="%s" target="_blank">%s</a> · <a href="%s">%s</a> · %s%s',
             esc_html__('Статтю створено.', 'treba-generate-content'),
             esc_url(get_permalink($post_id)),
@@ -1626,7 +2342,157 @@ final class Treba_Routes_Ai_Content_Plugin
             $tokens_text
         );
 
-        $this->reset_form = true;
+        if ($add_notices) {
+            $this->notices[] = $message;
+        }
+
+        return [
+            'success' => true,
+            'post_id' => $post_id,
+            'message' => $message,
+            'model' => $used_model,
+            'tokens_text' => $tokens_text,
+        ];
+    }
+
+    public function ajax_generate_csv_batch()
+    {
+        if (!$this->is_user_allowed()) {
+            wp_send_json_error(
+                [
+                    'message' => esc_html__(
+                        'Немає доступу до генерації.',
+                        'treba-generate-content'
+                    ),
+                ],
+                403
+            );
+        }
+
+        check_ajax_referer('tgpt_csv_batch', 'nonce');
+
+        $session = $this->get_csv_session();
+
+        if (empty($session) || empty($session['file_path'])) {
+            wp_send_json_error(
+                [
+                    'message' => esc_html__(
+                        'Сесія CSV не знайдена. Завантажте файл ще раз.',
+                        'treba-generate-content'
+                    ),
+                ],
+                400
+            );
+        }
+
+        if (!$this->is_csv_mapping_complete($session)) {
+            wp_send_json_error(
+                [
+                    'message' => esc_html__(
+                        'Мапінг не завершено. Збережіть мапінг полів.',
+                        'treba-generate-content'
+                    ),
+                ],
+                400
+            );
+        }
+
+        $offset = isset($_POST['offset']) ? (int) $_POST['offset'] : 0;
+        $offset = max(0, $offset);
+        $limit = isset($_POST['limit']) ? (int) $_POST['limit'] : 0;
+        $limit = $limit > 0 ? $limit : $this->get_csv_chunk_size($session);
+
+        $headers = $session['headers'] ?? [];
+        $rows = $this->read_csv_rows_chunk(
+            $session['file_path'],
+            $headers,
+            $offset,
+            $limit,
+            $session['delimiter'] ?? ','
+        );
+
+        if (empty($rows)) {
+            wp_send_json_success([
+                'processed' => [],
+                'next_offset' => $offset,
+                'done' => true,
+                'total' => (int) ($session['row_count'] ?? 0),
+            ]);
+        }
+
+        $mapping = $session['mapping'];
+        $template = $session['template'] ?? $this->get_default_template_key();
+        $results = [];
+
+        foreach ($rows as $index => $row) {
+            $payload = [
+                'title' => $row[$mapping['title']] ?? '',
+                'template' => $template,
+                'post_type' => $this->get_default_post_type(),
+                'route_number' => $row[$mapping['route_number']] ?? '',
+                'route_type' => $row[$mapping['route_type']] ?? '',
+                'city' => $row[$mapping['city']] ?? '',
+                'distance' => $row[$mapping['distance']] ?? '',
+                'interval' => $row[$mapping['interval']] ?? '',
+                'travel_time' => $row[$mapping['travel_time']] ?? '',
+                'carrier' => $row[$mapping['carrier']] ?? '',
+                'price' => $row[$mapping['price']] ?? '',
+                'stops_forward' => $row[$mapping['stops_forward']] ?? '',
+                'stops_backward' => $row[$mapping['stops_backward']] ?? '',
+            ];
+
+            $result = $this->process_generation($payload, false);
+            $row_number = $offset + $index + 1;
+
+            if ($result['success']) {
+                $results[] = [
+                    'row' => $row_number,
+                    'success' => true,
+                    'post_id' => $result['post_id'],
+                    'message' => $result['message'],
+                ];
+            } else {
+                $message = '';
+
+                if (!empty($result['errors'])) {
+                    $message = implode(
+                        '; ',
+                        array_map('wp_kses_post', $result['errors'])
+                    );
+                }
+
+                $results[] = [
+                    'row' => $row_number,
+                    'success' => false,
+                    'message' =>
+                        $message ?:
+                        esc_html__(
+                            'Не вдалося згенерувати запис.',
+                            'treba-generate-content'
+                        ),
+                ];
+            }
+        }
+
+        $processed_count = count($rows);
+        $next_offset = $offset + $processed_count;
+        $total_rows = (int) ($session['row_count'] ?? 0);
+        $done = $next_offset >= $total_rows;
+
+        // продовжуємо тримати сесію актуальною на час обробки
+        $this->save_csv_session($session);
+
+        if ($done) {
+            $this->remove_csv_file($session);
+            delete_transient($this->get_csv_session_key());
+        }
+
+        wp_send_json_success([
+            'processed' => $results,
+            'next_offset' => $next_offset,
+            'done' => $done,
+            'total' => $total_rows,
+        ]);
     }
 
     private function build_prompt($template_key, array $data)
@@ -1864,6 +2730,238 @@ final class Treba_Routes_Ai_Content_Plugin
         }
 
         return $types;
+    }
+
+    private function get_primary_taxonomy_for_post_type($post_type)
+    {
+        $taxonomies = get_object_taxonomies($post_type, 'objects');
+
+        if (isset($taxonomies['category'])) {
+            return 'category';
+        }
+
+        foreach ($taxonomies as $slug => $taxonomy) {
+            $taxonomy_obj = is_object($taxonomy) ? $taxonomy : null;
+
+            if (
+                $taxonomy_obj &&
+                !empty($taxonomy_obj->hierarchical) &&
+                !empty($taxonomy_obj->show_ui)
+            ) {
+                return (string) $slug;
+            }
+        }
+
+        return '';
+    }
+
+    private function get_category_terms_for_post_type($post_type)
+    {
+        $taxonomy = $this->get_primary_taxonomy_for_post_type($post_type);
+
+        if ('' === $taxonomy) {
+            return [
+                'taxonomy' => '',
+                'terms' => [],
+            ];
+        }
+
+        $terms = get_terms([
+            'taxonomy' => $taxonomy,
+            'hide_empty' => false,
+            'orderby' => 'name',
+            'order' => 'ASC',
+        ]);
+
+        if (is_wp_error($terms)) {
+            return [
+                'taxonomy' => $taxonomy,
+                'terms' => [],
+            ];
+        }
+
+        return [
+            'taxonomy' => $taxonomy,
+            'terms' => $terms,
+        ];
+    }
+
+    private function get_csv_session_key()
+    {
+        $user_id = get_current_user_id();
+        return 'tgpt_csv_session_' . (int) $user_id;
+    }
+
+    private function get_csv_session()
+    {
+        $session = get_transient($this->get_csv_session_key());
+        return is_array($session) ? $session : [];
+    }
+
+    private function save_csv_session(array $data)
+    {
+        set_transient(
+            $this->get_csv_session_key(),
+            $data,
+            $this->csv_session_ttl
+        );
+    }
+
+    private function clear_csv_session()
+    {
+        if (!$this->is_user_allowed()) {
+            return;
+        }
+
+        check_admin_referer('tgpt_upload_csv');
+
+        $this->remove_csv_file($this->get_csv_session());
+        delete_transient($this->get_csv_session_key());
+        $this->notices[] = esc_html__(
+            'Файл імпорту очищено.',
+            'treba-generate-content'
+        );
+    }
+
+    private function remove_csv_file($session)
+    {
+        if (
+            isset($session['file_path']) &&
+            $session['file_path'] &&
+            is_readable($session['file_path'])
+        ) {
+            @unlink($session['file_path']);
+        }
+    }
+
+    private function read_csv_headers_and_count($file_path, $delimiter = ',')
+    {
+        if (!is_readable($file_path)) {
+            return [
+                'headers' => [],
+                'rows' => 0,
+            ];
+        }
+
+        $headers = [];
+        $rows = 0;
+        $handle = fopen($file_path, 'r');
+
+        if (false === $handle) {
+            return [
+                'headers' => [],
+                'rows' => 0,
+            ];
+        }
+
+        $headers = fgetcsv($handle, 0, $delimiter);
+        $headers = is_array($headers) ? array_map('trim', $headers) : [];
+
+        while (($data = fgetcsv($handle, 0, $delimiter)) !== false) {
+            if (
+                $data === [null] ||
+                (count($data) === 1 && '' === trim((string) $data[0]))
+            ) {
+                continue;
+            }
+            $rows++;
+        }
+
+        fclose($handle);
+
+        return [
+            'headers' => array_values(array_filter($headers)),
+            'rows' => $rows,
+        ];
+    }
+
+    private function read_csv_rows_chunk(
+        $file_path,
+        $headers,
+        $offset,
+        $length,
+        $delimiter = ','
+    ) {
+        $rows = [];
+
+        if (
+            !is_readable($file_path) ||
+            empty($headers) ||
+            $offset < 0 ||
+            $length <= 0
+        ) {
+            return $rows;
+        }
+
+        $handle = fopen($file_path, 'r');
+
+        if (false === $handle) {
+            return $rows;
+        }
+
+        // skip header
+        fgetcsv($handle, 0, $delimiter);
+
+        $current_index = 0;
+
+        while (($data = fgetcsv($handle, 0, $delimiter)) !== false) {
+            if (
+                $data === [null] ||
+                (count($data) === 1 && '' === trim((string) $data[0]))
+            ) {
+                $current_index++;
+                continue;
+            }
+
+            if ($current_index < $offset) {
+                $current_index++;
+                continue;
+            }
+
+            $row = [];
+
+            foreach ($headers as $index => $header) {
+                $row[$header] = $data[$index] ?? '';
+            }
+
+            $rows[] = $row;
+            $current_index++;
+
+            if (count($rows) >= $length) {
+                break;
+            }
+        }
+
+        fclose($handle);
+
+        return $rows;
+    }
+
+    private function is_csv_mapping_complete(array $session)
+    {
+        if (empty($session['mapping']) || !is_array($session['mapping'])) {
+            return false;
+        }
+
+        foreach ($this->csv_required_fields as $field_key) {
+            if (
+                empty($session['mapping'][$field_key]) ||
+                !is_string($session['mapping'][$field_key])
+            ) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function get_csv_chunk_size(array $session)
+    {
+        $chunk =
+            isset($session['chunk']) && (int) $session['chunk'] > 0
+                ? (int) $session['chunk']
+                : $this->csv_default_chunk;
+        return max(1, min(10, $chunk));
     }
 
     private function get_default_model($provider)
