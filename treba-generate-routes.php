@@ -64,6 +64,8 @@ final class Treba_Routes_Ai_Content_Plugin
             'gpt-4.1-preview' => 'GPT-4.1 Preview (альтернативна версія, beta)',
             'o1-mini' => 'o1-mini (експериментальна)',
             'o1-preview' => 'o1-preview (експериментальна)',
+            'gpt-5-mini' => 'GPT-5 mini',
+            'gpt-5-nano' => 'GPT-5 nano',
         ],
         'openrouter' => [
             'openrouter/auto' => 'OpenRouter Auto (розумний роутинг)',
@@ -89,6 +91,7 @@ final class Treba_Routes_Ai_Content_Plugin
                 'OpenRouter · DevStral 2512 (free)',
             'x-ai/grok-code-fast-1' => 'OpenRouter · Grok Code Fast 1',
             'x-ai/grok-4-fast' => 'OpenRouter · Grok 4 Fast',
+            'x-ai/grok-4.1-fast' => 'OpenRouter · Grok 4.1 Fast',
             'google/gemini-3-flash-preview' =>
                 'OpenRouter · Gemini 3 Flash preview',
             'google/gemini-2.5-flash' => 'OpenRouter · Gemini 2.5 Flash',
