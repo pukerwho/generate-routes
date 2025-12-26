@@ -2255,9 +2255,9 @@ final class Treba_Routes_Ai_Content_Plugin
         $template = isset($input['template'])
             ? sanitize_key(wp_unslash($input['template']))
             : $this->get_default_template_key();
-        $template = isset($this->templates[$template])
-            ? $template
-            : $this->get_default_template_key();
+        if (!isset($this->templates[$template])) {
+            $template = $this->get_default_template_key();
+        }
         $route_number = isset($input['route_number'])
             ? sanitize_text_field(wp_unslash($input['route_number']))
             : '';
@@ -2321,35 +2321,10 @@ final class Treba_Routes_Ai_Content_Plugin
             }
         }
 
-        if (empty($title)) {
-            $errors[] = esc_html__(
-                'Назва статті обовʼязкова.',
-                'treba-generate-content'
-            );
-        }
-
-        if (
-            '' === $route_number ||
-            '' === $route_type ||
-            '' === $city ||
-            $distance <= 0 ||
-            '' === $interval ||
-            '' === $travel_time ||
-            '' === $carrier ||
-            '' === $price ||
-            empty($stops_forward) ||
-            empty($stops_backward)
-        ) {
-            $errors[] = esc_html__(
-                'Заповніть усі поля форми, включно із зупинками та довжиною маршруту.',
-                'treba-generate-content'
-            );
-        }
-
-        if ('' === $template || !isset($this->templates[$template])) {
-            $errors[] = esc_html__(
-                'Немає доступних шаблонів. Додайте їх на вкладці «Шаблони».',
-                'treba-generate-content'
+        if ('' === $title) {
+            $title = sprintf(
+                __('Без назви (%s)', 'treba-generate-content'),
+                gmdate('Y-m-d H:i')
             );
         }
 
@@ -2358,6 +2333,7 @@ final class Treba_Routes_Ai_Content_Plugin
         }
 
         if (!empty($errors)) {
+            // Помилки через ключ/провайдера — критичні
             if ($add_notices) {
                 $this->errors = array_merge($this->errors, $errors);
             }
