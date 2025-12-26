@@ -89,7 +89,6 @@ final class Treba_Routes_Ai_Content_Plugin
                 'OpenRouter · Nemotron 3 Nano 30B (free)',
             'mistralai/devstral-2512:free' =>
                 'OpenRouter · DevStral 2512 (free)',
-            'x-ai/grok-code-fast-1' => 'OpenRouter · Grok Code Fast 1',
             'x-ai/grok-4-fast' => 'OpenRouter · Grok 4 Fast',
             'x-ai/grok-4.1-fast' => 'OpenRouter · Grok 4.1 Fast',
             'google/gemini-3-flash-preview' =>
@@ -958,12 +957,22 @@ final class Treba_Routes_Ai_Content_Plugin
                         'treba-generate-content'
                     ); ?></p>
                     <div id="tgpt-csv-progress" style="margin-top:8px;"></div>
+                    <div id="tgpt-csv-summary" style="margin-top:8px;font-weight:600;"></div>
+                    <div id="tgpt-csv-log" style="margin-top:8px;max-height:260px;overflow:auto;border:1px solid #ccd0d4;padding:8px;background:#fff;"></div>
+                    <style>
+                        #tgpt-csv-log .tgpt-log-line{margin:0 0 6px 0;padding:4px 6px;border-radius:3px;font-size:13px;line-height:1.4;}
+                        #tgpt-csv-log .is-ok{background:#f3faf3;border:1px solid #b6e2b6;}
+                        #tgpt-csv-log .is-error{background:#fff5f5;border:1px solid #f0b7b7;}
+                        #tgpt-csv-progress small{color:#555;}
+                    </style>
                     <script>
                         (() => {
                             const btn = document.getElementById('tgpt-csv-start');
                             if (!btn) return;
 
                             const progress = document.getElementById('tgpt-csv-progress');
+                            const summary = document.getElementById('tgpt-csv-summary');
+                            const logBox = document.getElementById('tgpt-csv-log');
                             const total = parseInt(btn.dataset.total || '0', 10);
                             const chunk = parseInt(btn.dataset.chunk || '3', 10);
                             const nonce = btn.dataset.nonce || '';
@@ -972,6 +981,8 @@ final class Treba_Routes_Ai_Content_Plugin
                             const logLines = [];
                             let currentOffset = 0;
                             let isRunning = false;
+                            let okCount = 0;
+                            let failCount = 0;
 
                             const render = (text) => {
                                 if (progress) {
@@ -979,23 +990,54 @@ final class Treba_Routes_Ai_Content_Plugin
                                 }
                             };
 
-                            const appendLog = (line) => {
-                                logLines.push(line);
-                                if (logLines.length > 50) {
-                                    logLines.shift();
+                            const appendLog = (line, isOk) => {
+                                if (logBox) {
+                                    const div = document.createElement('div');
+                                    div.className = 'tgpt-log-line ' + (isOk ? 'is-ok' : 'is-error');
+                                    div.innerHTML = line;
+                                    logBox.appendChild(div);
+                                    logBox.scrollTop = logBox.scrollHeight;
+                                    logLines.push(div);
+                                    if (logLines.length > 200) {
+                                        const first = logLines.shift();
+                                        if (first && first.parentNode) {
+                                            first.parentNode.removeChild(first);
+                                        }
+                                    }
                                 }
-                                render(
-                                    logLines.join('<br>') +
-                                        '<br>' +
+
+                                if (summary) {
+                                    summary.innerHTML =
                                         '<?php echo esc_js(
                                             __(
-                                                'Прогрес:',
+                                                'Успіхів:',
                                                 'treba-generate-content'
                                             )
                                         ); ?> ' +
-                                        Math.min(currentOffset, total) +
-                                        ' / ' +
-                                        total
+                                        okCount +
+                                        ' · ' +
+                                        '<?php echo esc_js(
+                                            __(
+                                                'Помилок:',
+                                                'treba-generate-content'
+                                            )
+                                        ); ?> ' +
+                                        failCount;
+                                }
+
+                                render(
+                                    '<?php echo esc_js(
+                                        __('Прогрес:', 'treba-generate-content')
+                                    ); ?> ' +
+                                    Math.min(currentOffset, total) +
+                                    ' / ' +
+                                    total +
+                                    ' <small>(' +
+                                    '<?php echo esc_js(
+                                        __('пакет', 'treba-generate-content')
+                                    ); ?> ' +
+                                    chunk +
+                                    ')</small>'
                                 );
                             };
 
@@ -1061,41 +1103,45 @@ final class Treba_Routes_Ai_Content_Plugin
 
                                         processed.forEach((row) => {
                                             if (row.success) {
+                                                okCount += 1;
                                                 appendLog(
                                                     '✔ ' +
-                                                        '<?php echo esc_js(
-                                                            __(
-                                                                'Рядок',
-                                                                'treba-generate-content'
-                                                            )
-                                                        ); ?> ' +
-                                                        (row.row || '') +
-                                                        ': ' +
-                                                        (row.message || '<?php echo esc_js(
-                                                            __(
-                                                                'Готово',
-                                                                'treba-generate-content'
-                                                            )
-                                                        ); ?>')
+                                                    '<?php echo esc_js(
+                                                        __(
+                                                            'Рядок',
+                                                            'treba-generate-content'
+                                                        )
+                                                    ); ?> ' +
+                                                    (row.row || '') +
+                                                    ': ' +
+                                                    (row.message || '<?php echo esc_js(
+                                                        __(
+                                                            'Готово',
+                                                            'treba-generate-content'
+                                                        )
+                                                    ); ?>'),
+                                                    true
                                                 );
                                             } else {
+                                                failCount += 1;
                                                 appendLog(
                                                     '✖ ' +
+                                                    '<?php echo esc_js(
+                                                        __(
+                                                            'Рядок',
+                                                            'treba-generate-content'
+                                                        )
+                                                    ); ?> ' +
+                                                    (row.row || '') +
+                                                    ': ' +
+                                                    (row.message ||
                                                         '<?php echo esc_js(
                                                             __(
-                                                                'Рядок',
+                                                                'Помилка',
                                                                 'treba-generate-content'
                                                             )
-                                                        ); ?> ' +
-                                                        (row.row || '') +
-                                                        ': ' +
-                                                        (row.message ||
-                                                            '<?php echo esc_js(
-                                                                __(
-                                                                    'Помилка',
-                                                                    'treba-generate-content'
-                                                                )
-                                                            ); ?>')
+                                                        ); ?>'),
+                                                    false
                                                 );
                                             }
                                         });
@@ -1136,6 +1182,14 @@ final class Treba_Routes_Ai_Content_Plugin
                                     return;
                                 }
                                 logLines.length = 0;
+                                if (logBox) {
+                                    logBox.innerHTML = '';
+                                }
+                                okCount = 0;
+                                failCount = 0;
+                                if (summary) {
+                                    summary.innerHTML = '';
+                                }
                                 currentOffset = 0;
                                 runBatch();
                             });
