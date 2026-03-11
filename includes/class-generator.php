@@ -154,71 +154,145 @@ class TGR_Generator
 
   /**
    * Converts Markdown to Gutenberg block-format HTML.
+   * Uses a line-by-line state machine so elements separated by a single
+   * newline (common in AI output) are parsed correctly.
    */
   private function markdown_to_html(string $markdown): string
   {
     $text = str_replace(["\r\n", "\r"], "\n", $markdown);
-    $blocks = preg_split('/\n{2,}/', trim($text));
+    $lines = explode("\n", $text);
     $output = [];
 
-    foreach ($blocks as $block) {
-      $block = trim($block);
-      if ($block === '') {
+    $buf_type = '';
+    $buf = [];
+
+    $flush = function () use (&$buf_type, &$buf, &$output) {
+      if (empty($buf) || $buf_type === '') {
+        $buf_type = '';
+        $buf = [];
+        return;
+      }
+      switch ($buf_type) {
+        case 'heading':
+          if (preg_match('/^(#{1,6})\s+(.+)$/', $buf[0], $m)) {
+            $level = strlen($m[1]);
+            $h = $this->inline_markdown(trim($m[2]));
+            $output[] = "<!-- wp:heading {\"level\":{$level}} -->\n<h{$level} class=\"wp-block-heading\">{$h}</h{$level}>\n<!-- /wp:heading -->";
+          }
+          break;
+        case 'hr':
+          $output[] = "<!-- wp:separator -->\n<hr class=\"wp-block-separator has-alpha-channel-opacity\"/>\n<!-- /wp:separator -->";
+          break;
+        case 'ul':
+          $items = $this->parse_list_items(implode("\n", $buf));
+          $output[] = "<!-- wp:list -->\n<ul class=\"wp-block-list\">{$items}</ul>\n<!-- /wp:list -->";
+          break;
+        case 'ol':
+          $items = $this->parse_list_items(implode("\n", $buf));
+          $output[] = "<!-- wp:list {\"ordered\":true} -->\n<ol class=\"wp-block-list\">{$items}</ol>\n<!-- /wp:list -->";
+          break;
+        case 'quote':
+          $inner = preg_replace('/^>\s?/m', '', implode("\n", $buf));
+          $output[] = "<!-- wp:quote -->\n<blockquote class=\"wp-block-quote\"><p>" . $this->inline_markdown($inner) . "</p></blockquote>\n<!-- /wp:quote -->";
+          break;
+        case 'table':
+          $block_str = implode("\n", $buf);
+          if (preg_match('/^\|?[\s]*:?-+:?[\s]*\|/m', $block_str)) {
+            $tbl = $this->parse_table($block_str);
+            if ($tbl !== '') {
+              $output[] = $tbl;
+              break;
+            }
+          }
+          // Fallback to paragraph
+          $output[] = "<!-- wp:paragraph -->\n<p>" . implode('<br>', array_map(fn($l) => $this->inline_markdown(trim($l)), $buf)) . "</p>\n<!-- /wp:paragraph -->";
+          break;
+        case 'para':
+          $pl = array_filter(array_map(fn($l) => $this->inline_markdown(trim($l)), $buf), fn($l) => $l !== '');
+          if (!empty($pl)) {
+            $output[] = "<!-- wp:paragraph -->\n<p>" . implode('<br>', $pl) . "</p>\n<!-- /wp:paragraph -->";
+          }
+          break;
+      }
+      $buf_type = '';
+      $buf = [];
+    };
+
+    foreach ($lines as $line) {
+      $t = rtrim($line);
+
+      if (trim($t) === '') {
+        $flush();
+        continue;
+      }
+
+      // Heading (always single-line)
+      if (preg_match('/^(#{1,6})\s/', $t)) {
+        $flush();
+        $buf_type = 'heading';
+        $buf = [$t];
+        $flush();
         continue;
       }
 
       // Horizontal rule
-      if (preg_match('/^([-*_]){3,}$/', $block)) {
-        $output[] = "<!-- wp:separator -->\n<hr class=\"wp-block-separator has-alpha-channel-opacity\"/>\n<!-- /wp:separator -->";
+      if (preg_match('/^([-*_]){3,}$/', trim($t))) {
+        $flush();
+        $buf_type = 'hr';
+        $buf = [$t];
+        $flush();
         continue;
       }
 
-      // Headings
-      if (preg_match('/^(#{1,6})\s+(.+)$/', $block, $m)) {
-        $level = strlen($m[1]);
-        $heading = $this->inline_markdown(trim($m[2]));
-        $output[] = "<!-- wp:heading {\"level\":{$level}} -->\n<h{$level} class=\"wp-block-heading\">{$heading}</h{$level}>\n<!-- /wp:heading -->";
+      // Unordered list item
+      if (preg_match('/^[\-\*\+]\s/', $t)) {
+        if ($buf_type !== 'ul') {
+          $flush();
+          $buf_type = 'ul';
+        }
+        $buf[] = $t;
         continue;
       }
 
-      // Unordered list
-      if (preg_match('/^[\-\*\+]\s/', $block)) {
-        $items = $this->parse_list_items($block);
-        $output[] = "<!-- wp:list -->\n<ul class=\"wp-block-list\">{$items}</ul>\n<!-- /wp:list -->";
-        continue;
-      }
-
-      // Ordered list
-      if (preg_match('/^\d+\.\s/', $block)) {
-        $items = $this->parse_list_items($block);
-        $output[] = "<!-- wp:list {\"ordered\":true} -->\n<ol class=\"wp-block-list\">{$items}</ol>\n<!-- /wp:list -->";
+      // Ordered list item
+      if (preg_match('/^\d+\.\s/', $t)) {
+        if ($buf_type !== 'ol') {
+          $flush();
+          $buf_type = 'ol';
+        }
+        $buf[] = $t;
         continue;
       }
 
       // Blockquote
-      if (preg_match('/^>\s?/', $block)) {
-        $inner = preg_replace('/^>\s?/m', '', $block);
-        $inner = $this->inline_markdown($inner);
-        $output[] = "<!-- wp:quote -->\n<blockquote class=\"wp-block-quote\"><p>{$inner}</p></blockquote>\n<!-- /wp:quote -->";
+      if (strpos($t, '>') === 0) {
+        if ($buf_type !== 'quote') {
+          $flush();
+          $buf_type = 'quote';
+        }
+        $buf[] = $t;
         continue;
       }
 
-      // Markdown table: block contains | and a separator row like |---|---|---|
-      if (strpos($block, '|') !== false && preg_match('/^\|?[ \t]*:?-+:?[ \t]*\|/m', $block)) {
-        $table_html = $this->parse_table($block);
-        if ($table_html !== '') {
-          $output[] = $table_html;
-          continue;
+      // Table (line contains |)
+      if (strpos($t, '|') !== false) {
+        if ($buf_type !== 'table') {
+          $flush();
+          $buf_type = 'table';
         }
+        $buf[] = $t;
+        continue;
       }
 
-      // Paragraph (default)
-      $lines = explode("\n", $block);
-      $lines = array_map(fn($l) => $this->inline_markdown(trim($l)), $lines);
-      $para = implode('<br>', $lines);
-      $output[] = "<!-- wp:paragraph -->\n<p>{$para}</p>\n<!-- /wp:paragraph -->";
+      // Paragraph
+      if ($buf_type !== 'para') {
+        $flush();
+        $buf_type = 'para';
+      }
+      $buf[] = $t;
     }
 
+    $flush();
     return implode("\n\n", $output);
   }
 
@@ -278,7 +352,7 @@ class TGR_Generator
     }
     $tbody = $tbody_rows !== '' ? "<tbody>{$tbody_rows}</tbody>" : '';
 
-    $table = "<figure class=\"wp-block-table\"><table><thead>{$thead}</thead>{$tbody}</table></figure>";
+    $table = "<figure class=\"wp-block-table\"><table>{$thead}{$tbody}</table></figure>";
     return "<!-- wp:table -->\n{$table}\n<!-- /wp:table -->";
   }
 
