@@ -203,6 +203,15 @@ class TGR_Generator
         continue;
       }
 
+      // Markdown table: block contains | and a separator row like |---|---|---|
+      if (strpos($block, '|') !== false && preg_match('/^\|?[ \t]*:?-+:?[ \t]*\|/m', $block)) {
+        $table_html = $this->parse_table($block);
+        if ($table_html !== '') {
+          $output[] = $table_html;
+          continue;
+        }
+      }
+
       // Paragraph (default)
       $lines = explode("\n", $block);
       $lines = array_map(fn($l) => $this->inline_markdown(trim($l)), $lines);
@@ -223,6 +232,54 @@ class TGR_Generator
       $items .= '<li>' . $this->inline_markdown($line) . '</li>';
     }
     return $items;
+  }
+
+  /**
+   * Converts a Markdown pipe table into a Gutenberg wp:table block.
+   * Handles optional leading/trailing pipes, and :---/---: alignment markers.
+   */
+  private function parse_table(string $block): string
+  {
+    $lines = array_filter(
+      array_map('trim', explode("\n", $block)),
+      fn($l) => $l !== ''
+    );
+    $lines = array_values($lines);
+
+    if (count($lines) < 2) {
+      return '';
+    }
+
+    // Helper: split a pipe-row into cells, stripping leading/trailing pipes
+    $split = function (string $line): array {
+      $line = trim($line, '| ');
+      return array_map('trim', explode('|', $line));
+    };
+
+    // Row 0 = header, Row 1 = separator (skip), Row 2+ = body
+    $header_cells = $split($lines[0]);
+
+    // Build <thead>
+    $th_html = '';
+    foreach ($header_cells as $cell) {
+      $th_html .= '<th>' . $this->inline_markdown($cell) . '</th>';
+    }
+    $thead = "<thead><tr>{$th_html}</tr></thead>";
+
+    // Build <tbody> (skip index 1 which is the separator row)
+    $tbody_rows = '';
+    for ($i = 2; $i < count($lines); $i++) {
+      $cells = $split($lines[$i]);
+      $td_html = '';
+      foreach ($cells as $cell) {
+        $td_html .= '<td>' . $this->inline_markdown($cell) . '</td>';
+      }
+      $tbody_rows .= "<tr>{$td_html}</tr>";
+    }
+    $tbody = $tbody_rows !== '' ? "<tbody>{$tbody_rows}</tbody>" : '';
+
+    $table = "<figure class=\"wp-block-table\"><table><thead>{$thead}</thead>{$tbody}</table></figure>";
+    return "<!-- wp:table -->\n{$table}\n<!-- /wp:table -->";
   }
 
   private function inline_markdown(string $text): string
