@@ -1,0 +1,203 @@
+/* ============================================================
+   Route Article Generator — Admin Styles
+   ============================================================ */
+
+/* Wrap & typography */
+.tgr-wrap {
+  max-width: 860px;
+}
+
+.tgr-page-title {
+  font-size: 1.5rem;
+  margin-bottom: 1.2rem;
+}
+
+/* Card containers */
+.tgr-card {
+  background: #fff;
+  border: 1px solid #c3c4c7;
+  border-radius: 4px;
+  padding: 20px 24px;
+  margin-bottom: 18px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .05);
+}
+
+.tgr-card h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0 0 14px;
+  padding: 0 0 10px;
+  color: #1d2327;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+/* Form fields */
+.tgr-field {
+  margin-bottom: 16px;
+}
+
+.tgr-field label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: #1d2327;
+}
+
+.tgr-field input[type="file"] {
+  margin-right: 10px;
+}
+
+/* CSV status badge */
+.tgr-csv-status,
+#tgr-csv-status {
+  display: inline-block;
+  margin-left: 10px;
+  font-size: .85rem;
+  padding: 2px 8px;
+  border-radius: 3px;
+  vertical-align: middle;
+}
+
+.tgr-status-success {
+  background: #d4edda;
+  color: #155724;
+}
+
+.tgr-status-error {
+  background: #f8d7da;
+  color: #721c24;
+}
+
+.tgr-status-info {
+  background: #d1ecf1;
+  color: #0c5460;
+}
+
+/* Meta row */
+.tgr-meta {
+  font-size: .85rem;
+  color: #50575e;
+  margin-bottom: 14px;
+}
+
+/* Action buttons */
+.tgr-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+/* Routes list */
+.tgr-routes-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 16px;
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.tgr-route-item {
+  background: #f6f7f7;
+  border: 1px solid #dcdcde;
+  border-radius: 3px;
+  padding: 3px 10px;
+  font-size: .85rem;
+  color: #1d2327;
+  transition: background .2s, color .2s;
+}
+
+.tgr-route-active {
+  background: #fff8e1;
+  border-color: #ffc107;
+  color: #856404;
+}
+
+.tgr-route-created {
+  background: #d4edda;
+  border-color: #28a745;
+  color: #155724;
+}
+
+.tgr-route-skipped {
+  background: #e2e3e5;
+  border-color: #adb5bd;
+  color: #495057;
+}
+
+.tgr-route-error {
+  background: #f8d7da;
+  border-color: #dc3545;
+  color: #721c24;
+}
+
+/* Progress bar */
+.tgr-progress-bar-wrap {
+  background: #f6f7f7;
+  border: 1px solid #dcdcde;
+  border-radius: 4px;
+  overflow: hidden;
+  height: 22px;
+  margin-bottom: 8px;
+}
+
+.tgr-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #0073aa, #00a0d2);
+  color: #fff;
+  font-size: .75rem;
+  line-height: 22px;
+  text-align: center;
+  transition: width .4s ease;
+  min-width: 40px;
+}
+
+#tgr-progress-text {
+  font-size: .85rem;
+  color: #50575e;
+  margin: 4px 0 12px;
+}
+
+/* Log */
+.tgr-log {
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid #dcdcde;
+  border-radius: 3px;
+  padding: 10px 12px;
+  background: #f9f9f9;
+  font-size: .83rem;
+  font-family: Consolas, monospace;
+  line-height: 1.6;
+}
+
+.tgr-log-entry {
+  padding: 1px 0;
+}
+
+.tgr-log-created {
+  color: #155724;
+}
+
+.tgr-log-skipped {
+  color: #495057;
+}
+
+.tgr-log-error {
+  color: #721c24;
+}
+
+.tgr-log-warn {
+  color: #856404;
+}
+
+.tgr-log-summary {
+  color: #1d2327;
+  font-weight: 600;
+  margin-top: 4px;
+}
+
+.tgr-log-divider {
+  color: #adb5bd;
+}

@@ -111,8 +111,8 @@ class TGR_CSV_Handler
     }
     $delimiter = $this->detect_delimiter($first_line);
 
-    // Read header row (0 = no line-length limit)
-    $header = fgetcsv($handle, 0, $delimiter);
+    // Read header row
+    $header = fgetcsv($handle, 8192, $delimiter);
     if (!$header) {
       fclose($handle);
       throw new RuntimeException(__('CSV файл порожній або пошкоджений.', 'treba-generate-routes'));
@@ -143,7 +143,7 @@ class TGR_CSV_Handler
     }
 
     $routes = [];
-    while (($row = fgetcsv($handle, 0, $delimiter)) !== false) {
+    while (($row = fgetcsv($handle, 8192, $delimiter)) !== false) {
       $route = [];
       foreach ($col_map as $field => $idx) {
         $raw = isset($row[$idx]) ? trim($row[$idx]) : '';

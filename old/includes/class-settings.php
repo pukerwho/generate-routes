@@ -16,17 +16,6 @@ class TGR_Settings
   const OPT_PROMPT = 'tgr_prompt';
   const OPT_POST_TYPE = 'tgr_post_type';
 
-  // Featured-image generation
-  const OPT_IMAGE_ENABLED = 'tgr_image_enabled';
-  const OPT_IMAGE_MODEL = 'tgr_image_model';
-  const OPT_IMAGE_PROMPT = 'tgr_image_prompt';
-
-  // Post meta key that receives the route number on generation
-  const OPT_ROUTE_NUMBER_META = 'tgr_route_number_meta';
-
-  // Default image model slug (editable in settings).
-  const DEFAULT_IMAGE_MODEL = 'google/gemini-3.1-flash-image-preview';
-
   // Transient key for cached model list
   const TRANSIENT_MODELS = 'tgr_models_cache';
 
@@ -74,35 +63,6 @@ class TGR_Settings
     return in_array($pt, $valid, true) ? $pt : 'post';
   }
 
-  public function get_image_enabled(): bool
-  {
-    return (bool) get_option(self::OPT_IMAGE_ENABLED, false);
-  }
-
-  public function get_image_model(): string
-  {
-    return sanitize_text_field(get_option(self::OPT_IMAGE_MODEL, self::DEFAULT_IMAGE_MODEL));
-  }
-
-  public function get_image_prompt(): string
-  {
-    return get_option(self::OPT_IMAGE_PROMPT, '');
-  }
-
-  public function get_route_number_meta(): string
-  {
-    return $this->sanitize_meta_key((string) get_option(self::OPT_ROUTE_NUMBER_META, ''));
-  }
-
-  /**
-   * Keeps only characters valid in a post meta key, preserving case and a
-   * leading underscore (e.g. _crb_routes_number).
-   */
-  private function sanitize_meta_key(string $key): string
-  {
-    return preg_replace('/[^A-Za-z0-9_\-]/', '', trim($key));
-  }
-
   // -----------------------------------------------------------------------
   // Save handler
   // -----------------------------------------------------------------------
@@ -140,21 +100,6 @@ class TGR_Settings
     if (in_array($post_type, $allowed_types, true)) {
       update_option(self::OPT_POST_TYPE, $post_type, false);
     }
-
-    // Featured-image generation
-    update_option(self::OPT_IMAGE_ENABLED, isset($_POST['tgr_image_enabled']) ? 1 : 0, false);
-
-    $image_model = isset($_POST['tgr_image_model']) ? sanitize_text_field(wp_unslash($_POST['tgr_image_model'])) : '';
-    update_option(self::OPT_IMAGE_MODEL, $image_model !== '' ? $image_model : self::DEFAULT_IMAGE_MODEL, false);
-
-    $image_prompt = isset($_POST['tgr_image_prompt']) ? sanitize_textarea_field(wp_unslash($_POST['tgr_image_prompt'])) : '';
-    update_option(self::OPT_IMAGE_PROMPT, $image_prompt, false);
-
-    // Route-number meta key
-    $route_meta = isset($_POST['tgr_route_number_meta'])
-      ? $this->sanitize_meta_key(wp_unslash($_POST['tgr_route_number_meta']))
-      : '';
-    update_option(self::OPT_ROUTE_NUMBER_META, $route_meta, false);
 
     delete_transient(self::TRANSIENT_MODELS);
 
@@ -258,10 +203,6 @@ class TGR_Settings
     $cur_pt = $this->get_post_type();
     $post_types = get_post_types(['public' => true], 'objects');
     $has_key = $this->get_api_key() !== '';
-    $img_enabled = $this->get_image_enabled();
-    $img_model = $this->get_image_model();
-    $img_prompt = $this->get_image_prompt();
-    $route_meta = $this->get_route_number_meta();
     ?>
     <div class="wrap tgr-wrap">
       <h1 class="tgr-page-title">
@@ -346,49 +287,6 @@ class TGR_Settings
 
         <div class="tgr-card">
           <h2>
-            <?php esc_html_e('Головне зображення', 'treba-generate-routes'); ?>
-          </h2>
-
-          <div class="tgr-field">
-            <label>
-              <input type="checkbox" name="tgr_image_enabled" value="1" <?php checked($img_enabled); ?>>
-              <?php esc_html_e('Генерувати головне зображення (featured image) для кожного маршруту', 'treba-generate-routes'); ?>
-            </label>
-            <p class="description">
-              <?php esc_html_e('Зображення створюється через OpenRouter після тексту. Це окремі витрати та додатковий час на кожен маршрут.', 'treba-generate-routes'); ?>
-            </p>
-          </div>
-
-          <div class="tgr-field">
-            <label for="tgr_image_model">
-              <?php esc_html_e('Модель зображення', 'treba-generate-routes'); ?>
-            </label>
-            <input type="text" id="tgr_image_model" name="tgr_image_model" class="regular-text"
-              value="<?php echo esc_attr($img_model); ?>"
-              placeholder="<?php echo esc_attr(self::DEFAULT_IMAGE_MODEL); ?>">
-            <p class="description">
-              <?php esc_html_e('Слаг моделі OpenRouter, що підтримує генерацію зображень (output modality «image»). Наприклад: google/gemini-2.5-flash-image-preview.', 'treba-generate-routes'); ?>
-            </p>
-          </div>
-
-          <div class="tgr-field">
-            <label for="tgr_image_prompt">
-              <?php esc_html_e('Промт зображення', 'treba-generate-routes'); ?>
-            </label>
-            <textarea id="tgr_image_prompt" name="tgr_image_prompt" rows="6" class="large-text"
-              placeholder="<?php esc_attr_e('Реалістичне фото маршрутного транспорту №{route_number} ({route_type}) у місті {city}...', 'treba-generate-routes'); ?>"><?php echo esc_textarea($img_prompt); ?></textarea>
-            <p class="description">
-              <?php esc_html_e('Ті ж змінні, що й для тексту:', 'treba-generate-routes'); ?>
-              <code>{title}</code>, <code>{route_number}</code>, <code>{route_type}</code>,
-              <code>{city}</code>, <code>{distance}</code>, <code>{interval}</code>,
-              <code>{travel_time}</code>, <code>{carrier}</code>, <code>{price}</code>,
-              <code>{stops_forward}</code>, <code>{stops_backward}</code>
-            </p>
-          </div>
-        </div>
-
-        <div class="tgr-card">
-          <h2>
             <?php esc_html_e('Тип запису', 'treba-generate-routes'); ?>
           </h2>
 
@@ -404,18 +302,6 @@ class TGR_Settings
                 </option>
               <?php endforeach; ?>
             </select>
-          </div>
-
-          <div class="tgr-field">
-            <label for="tgr_route_number_meta">
-              <?php esc_html_e('Мета-поле для номера маршруту', 'treba-generate-routes'); ?>
-            </label>
-            <input type="text" id="tgr_route_number_meta" name="tgr_route_number_meta" class="regular-text"
-              value="<?php echo esc_attr($route_meta); ?>"
-              placeholder="<?php esc_attr_e('напр. _crb_routes_number', 'treba-generate-routes'); ?>">
-            <p class="description">
-              <?php esc_html_e('Ключ мета-поля, куди при генерації записується значення зі стовпця «route_number». На різних сайтах ключ може відрізнятися (_crb_routes_number, _crb_transport_number тощо). Залиште порожнім, щоб не записувати.', 'treba-generate-routes'); ?>
-            </p>
           </div>
         </div>
 
@@ -441,7 +327,6 @@ class TGR_Settings
     $has_prompt = trim($this->get_prompt()) !== '';
     $post_type = $this->get_post_type();
     $model = $this->get_model();
-    $img_on = $this->get_image_enabled() && trim($this->get_image_prompt()) !== '';
     ?>
     <div class="wrap tgr-wrap">
       <h1 class="tgr-page-title">
@@ -491,12 +376,6 @@ class TGR_Settings
           <span>
             <?php esc_html_e('Тип запису:', 'treba-generate-routes'); ?> <strong>
               <?php echo esc_html($post_type); ?>
-            </strong>
-          </span>
-          &nbsp;|&nbsp;
-          <span>
-            <?php esc_html_e('Зображення:', 'treba-generate-routes'); ?> <strong>
-              <?php echo $img_on ? esc_html__('увімкнено', 'treba-generate-routes') : esc_html__('вимкнено', 'treba-generate-routes'); ?>
             </strong>
           </span>
         </div>

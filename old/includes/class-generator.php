@@ -8,17 +8,6 @@ defined('ABSPATH') || exit;
 class TGR_Generator
 {
 
-  /** Max accepted size of a generated image in bytes (8 MB). */
-  const MAX_IMAGE_BYTES = 8388608;
-
-  /** Allowed image MIME types → file extension. */
-  const ALLOWED_IMAGE_TYPES = [
-    'image/png' => 'png',
-    'image/jpeg' => 'jpg',
-    'image/webp' => 'webp',
-    'image/gif' => 'gif',
-  ];
-
   private TGR_Settings $settings;
 
   public function __construct()
@@ -105,120 +94,15 @@ class TGR_Generator
       ];
     }
 
-    // Store the route number into the configured post meta key, if any.
-    $meta_key = $this->settings->get_route_number_meta();
-    if ($meta_key !== '' && isset($route['route_number']) && $route['route_number'] !== '') {
-      update_post_meta($post_id, $meta_key, $route['route_number']);
-    }
-
-    // Best-effort featured image — a failure here never discards the draft.
-    $image_note = '';
-    if ($this->settings->get_image_enabled()) {
-      $image_result = $this->generate_featured_image($post_id, $title, $route);
-      $image_note = is_wp_error($image_result)
-        ? ' — ' . esc_html(sprintf(
-            __('зображення не додано: %s', 'treba-generate-routes'),
-            $image_result->get_error_message()
-          ))
-        : ' — ' . esc_html__('зображення додано', 'treba-generate-routes');
-    }
-
     return [
       'status' => 'created',
       'message' => sprintf(
         __('"%1$s" — чернетку створено (<a href="%2$s" target="_blank">редагувати</a>)', 'treba-generate-routes'),
         esc_html($title),
         esc_url(get_edit_post_link($post_id))
-      ) . $image_note,
+      ),
       'post_id' => $post_id,
     ];
-  }
-
-  /**
-   * Generates an image for the route and sets it as the post's featured image.
-   *
-   * @return int|WP_Error Attachment ID on success, WP_Error on any failure.
-   */
-  private function generate_featured_image(int $post_id, string $title, array $route)
-  {
-    $prompt = $this->settings->get_image_prompt();
-    if (trim($prompt) === '') {
-      return new WP_Error('no_image_prompt', __('промт зображення не налаштовано', 'treba-generate-routes'));
-    }
-
-    $model = trim($this->settings->get_image_model());
-    if ($model === '') {
-      return new WP_Error('no_image_model', __('модель зображення не налаштовано', 'treba-generate-routes'));
-    }
-
-    $api = new TGR_OpenRouter($this->settings->get_api_key(), $model);
-    $image = $api->generate_image($this->build_prompt($prompt, $route));
-    if (is_wp_error($image)) {
-      return $image;
-    }
-
-    return $this->sideload_image($post_id, $title, $image['bytes'], $image['mime']);
-  }
-
-  /**
-   * Writes raw image bytes to the media library and attaches them as the
-   * featured image of the given post.
-   *
-   * @return int|WP_Error Attachment ID on success, WP_Error on failure.
-   */
-  private function sideload_image(int $post_id, string $title, string $bytes, string $mime)
-  {
-    if (!isset(self::ALLOWED_IMAGE_TYPES[$mime])) {
-      return new WP_Error('bad_mime', sprintf(__('непідтримуваний тип: %s', 'treba-generate-routes'), $mime));
-    }
-
-    if (strlen($bytes) > self::MAX_IMAGE_BYTES) {
-      return new WP_Error('too_big', __('зображення завелике', 'treba-generate-routes'));
-    }
-
-    require_once ABSPATH . 'wp-admin/includes/image.php';
-    require_once ABSPATH . 'wp-admin/includes/file.php';
-    require_once ABSPATH . 'wp-admin/includes/media.php';
-
-    $slug = sanitize_title($title);
-    if ($slug === '') {
-      $slug = 'route';
-    }
-    $filename = $slug . '-' . $post_id . '.' . self::ALLOWED_IMAGE_TYPES[$mime];
-
-    $upload = wp_upload_bits($filename, null, $bytes);
-    if (!empty($upload['error'])) {
-      return new WP_Error('upload_failed', sanitize_text_field($upload['error']));
-    }
-
-    // Verify what actually landed on disk really is an image.
-    $filetype = wp_check_filetype($upload['file']);
-    if (empty($filetype['type']) || strpos($filetype['type'], 'image/') !== 0) {
-      @unlink($upload['file']);
-      return new WP_Error('bad_file', __('збережений файл не є зображенням', 'treba-generate-routes'));
-    }
-
-    $attach_id = wp_insert_attachment([
-      'post_mime_type' => $filetype['type'],
-      'post_title' => $title,
-      'post_content' => '',
-      'post_status' => 'inherit',
-    ], $upload['file'], $post_id, true);
-
-    if (is_wp_error($attach_id)) {
-      @unlink($upload['file']);
-      return $attach_id;
-    }
-
-    $meta = wp_generate_attachment_metadata($attach_id, $upload['file']);
-    wp_update_attachment_metadata($attach_id, $meta);
-    update_post_meta($attach_id, '_wp_attachment_image_alt', $title);
-
-    if (!set_post_thumbnail($post_id, $attach_id)) {
-      return new WP_Error('thumb_failed', __('не вдалося призначити мініатюру', 'treba-generate-routes'));
-    }
-
-    return $attach_id;
   }
 
   /**
@@ -474,42 +358,18 @@ class TGR_Generator
 
   private function inline_markdown(string $text): string
   {
-    // Code spans and links are extracted into placeholders first, so the
-    // emphasis rules below can never run inside them (and their contents are
-    // properly escaped). Placeholders are restored at the very end.
-    $tokens = [];
-    $protect = function (string $html) use (&$tokens): string {
-      $token = "\x00TGR" . count($tokens) . "\x00";
-      $tokens[$token] = $html;
-      return $token;
-    };
-
-    // Code spans — escape their contents so `<b>` stays literal.
-    $text = preg_replace_callback('/`([^`]+)`/', function ($m) use ($protect) {
-      return $protect('<code>' . esc_html($m[1]) . '</code>');
-    }, $text);
-
-    // Links — escape URL and link text.
-    $text = preg_replace_callback('/\[([^\]]+)\]\(([^)\s]+)\)/', function ($m) use ($protect) {
-      return $protect('<a href="' . esc_url($m[2]) . '">' . esc_html($m[1]) . '</a>');
-    }, $text);
-
-    // Bold + italic — same marker required on both ends (no mixing * and _).
-    $text = preg_replace('/(\*\*\*|___)(?=\S)(.+?)(?<=\S)\1/s', '<strong><em>$2</em></strong>', $text);
-    // Bold.
-    $text = preg_replace('/(\*\*|__)(?=\S)(.+?)(?<=\S)\1/s', '<strong>$2</strong>', $text);
-    // Italic with '*'.
-    $text = preg_replace('/(?<!\*)\*(?=\S)(.+?)(?<=\S)\*(?!\*)/s', '<em>$1</em>', $text);
-    // Italic with '_' — only at word boundaries, so snake_case stays intact.
-    $text = preg_replace('/(?<![\w_])_(?=\S)(.+?)(?<=\S)_(?![\w_])/s', '<em>$1</em>', $text);
-    // Strikethrough.
-    $text = preg_replace('/~~(?=\S)(.+?)(?<=\S)~~/s', '<del>$1</del>', $text);
-
-    // Restore shielded code spans and links.
-    if (!empty($tokens)) {
-      $text = strtr($text, $tokens);
-    }
-
+    $text = preg_replace('/`([^`]+)`/', '<code>$1</code>', $text);
+    $text = preg_replace('/[\*_]{3}(.+?)[\*_]{3}/', '<strong><em>$1</em></strong>', $text);
+    $text = preg_replace('/[\*_]{2}(.+?)[\*_]{2}/', '<strong>$1</strong>', $text);
+    $text = preg_replace('/(?<!\*)[\*_](?![\*_])(.+?)(?<!\*)([\*_])(?![\*_])/', '<em>$1</em>', $text);
+    $text = preg_replace('/~~(.+?)~~/', '<del>$1</del>', $text);
+    $text = preg_replace_callback(
+      '/\[([^\]]+)\]\(([^)]+)\)/',
+      function ($m) {
+        return '<a href="' . esc_url($m[2]) . '">' . esc_html($m[1]) . '</a>';
+      },
+      $text
+    );
     return $text;
   }
 }
